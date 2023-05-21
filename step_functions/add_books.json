@@ -1,0 +1,36 @@
+{
+  "Comment": "Add new Book to the Library!",
+  "StartAt": "Check if Book Already Present",
+  "States": {
+    "Check if Book Already Present": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:652258292581:function:CheckIfBookAlreadyPresentFunction",
+      "Next": "Is Present?"
+    },
+    "Is Present?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.is_present",
+          "BooleanEquals": true,
+          "Next": "Book Already Present Issue"
+        },
+        {
+          "Variable": "$.is_present",
+           "BooleanEquals": false,
+          "Next": "Add New Book"
+        }
+      ]
+    },
+    "Book Already Present Issue": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:652258292581:function:BookAlreadyPresentIssueFunction",
+      "End": true
+    },
+    "Add New Book": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:652258292581:function:AddNewBookFunction",
+      "End": true
+    }
+  }
+}

@@ -1,0 +1,1741 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Parameters:
+  AdminEmailId:
+    Type: String
+  AdminName:
+    Type: String
+
+Resources:
+# For VPC, Subnets and NAT gateway Configuration, code is adapted from
+# AWS Documentation:
+# Title: AWS CloudFormation VPC template
+# Availability: https://docs.aws.amazon.com/codebuild/latest/userguide/cloudformation-vpc-template.html
+##########################  VPC, Subnets and NAT gateway Configuration ##########################
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: '10.0.0.0/16'
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - 0
+        - !GetAZs
+          Ref: "AWS::Region"
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.0.0/24'
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select
+        - 1
+        - !GetAZs
+          Ref: "AWS::Region"
+      VpcId: !Ref VPC
+      CidrBlock: '10.0.1.0/24'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: '10.0.3.0/24'
+      MapPublicIpOnLaunch: true
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs  '' ]
+      CidrBlock: '10.0.4.0/24'
+      MapPublicIpOnLaunch: true
+
+  NatGateway1EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway2EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway1EIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway2EIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  DefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  DefaultPrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnet2
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: To only allow outbound traffic
+      VpcId: !Ref VPC
+
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: To give permission to Lambda to access RDS
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+          FromPort: 0
+          ToPort: 3306
+
+# For Cognito Configuration, code is adapted from
+# AWS Documentation:
+# Title: Amazon Cognito resource type reference
+# Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/AWS_Cognito.html
+########################## Cognito Configuration ##########################
+  CognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: library-user-pool
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: True
+      UsernameConfiguration:
+        CaseSensitive: false
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireSymbols: true
+          RequireUppercase: true
+          TemporaryPasswordValidityDays: 1
+      MfaConfiguration: 'OFF'
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: false
+          Required: true
+        - Name: name
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+
+  CognitoUserPoolGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: 'USERS'
+      UserPoolId:
+        Ref: CognitoUserPool
+
+  CognitoAdminPoolGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: 'ADMINS'
+      UserPoolId:
+        Ref: CognitoUserPool
+
+  CognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: library-user-pool-client
+      UserPoolId:
+        Ref: CognitoUserPool
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - implicit
+      AllowedOAuthScopes:
+        - phone
+        - email
+        - openid
+        - profile
+        - aws.cognito.signin.user.admin
+      PreventUserExistenceErrors: ENABLED
+      CallbackURLs:
+        - http://localhost:8000
+      GenerateSecret: false
+      SupportedIdentityProviders:
+        - COGNITO
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: e-library
+      UserPoolId: !Ref CognitoUserPool
+
+  CognitoAdminUserPool:
+    Type: AWS::Cognito::UserPoolUser
+    Properties:
+      DesiredDeliveryMediums:
+        - EMAIL
+      UserAttributes:
+        - Name: email
+          Value: !Ref AdminEmailId
+        - Name: name
+          Value: !Ref AdminName
+        - Name: email_verified
+          Value: 'true'
+      Username: !Ref AdminEmailId
+      UserPoolId: !Ref CognitoUserPool
+
+  CognitoAdminUserAdminGroupAttachment:
+    Type: AWS::Cognito::UserPoolUserToGroupAttachment
+    Properties:
+      GroupName: !Ref CognitoAdminPoolGroup
+      Username: !Ref CognitoAdminUserPool
+      UserPoolId: !Ref CognitoUserPool
+
+
+# For API Gateway Configuration, code is adapted from
+# AWS Documentation:
+# Title: Amazon API Gateway resource type reference
+# Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/AWS_ApiGateway.html
+########################## API Gateway Configuration ##########################
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: eLibrary
+      Description: e-Library based on python and aws
+
+  LibrarianResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      RestApiId: !Ref ApiGateway
+      PathPart: 'librarian'
+
+  UserResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      RestApiId: !Ref ApiGateway
+      PathPart: 'user'
+
+  ApiGatewayCreateNewMemberResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref LibrarianResource
+      RestApiId: !Ref ApiGateway
+      PathPart: 'addNewMember'
+
+  AddNewBookResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref LibrarianResource
+      RestApiId: !Ref ApiGateway
+      PathPart: 'addNewBook'
+
+  UpdateBookQtyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref LibrarianResource
+      RestApiId: !Ref ApiGateway
+      PathPart: 'updateBookQty'
+
+  ListBooksBySearchResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref UserResource
+      RestApiId: !Ref ApiGateway
+      PathPart: 'listBooksBySearch'
+
+  IssueBooksResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref LibrarianResource
+      RestApiId: !Ref ApiGateway
+      PathPart: 'issueBooks'
+
+  ReturnBooksResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref LibrarianResource
+      RestApiId: !Ref ApiGateway
+      PathPart: 'returnBooks'
+
+  DeactivateBooksResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref LibrarianResource
+      RestApiId: !Ref ApiGateway
+      PathPart: 'deactivateBooks'
+
+  GetUserDetailsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !Ref UserResource
+      RestApiId: !Ref ApiGateway
+      PathPart: 'getUserDetails'
+
+  CreateNewMemberMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref LambdaAuthorizer
+      HttpMethod: POST
+      Integration:
+        Credentials: !GetAtt [ APIGatewayToLambdaRole, Arn ]
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+            - arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+            - lambdaArn: !GetAtt [ TriggerRegisterNewMemberStateMachineFunction, Arn ]
+      ResourceId: !Ref ApiGatewayCreateNewMemberResource
+      RestApiId: !Ref ApiGateway
+
+  AddNewBookMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref LambdaAuthorizer
+      HttpMethod: POST
+      Integration:
+        Credentials: !GetAtt [ APIGatewayToLambdaRole, Arn ]
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt [ TriggerAddBookStateMachineFunction, Arn ]
+      ResourceId: !Ref AddNewBookResource
+      RestApiId: !Ref ApiGateway
+
+  UpdateBookQtyMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref LambdaAuthorizer
+      HttpMethod: POST
+      Integration:
+        Credentials: !GetAtt [ APIGatewayToLambdaRole, Arn ]
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt [ UpdateBookQtyFunction, Arn ]
+      ResourceId: !Ref UpdateBookQtyResource
+      RestApiId: !Ref ApiGateway
+
+  ListBooksBySearchMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref LambdaAuthorizer
+      HttpMethod: POST
+      Integration:
+        Credentials: !GetAtt [ APIGatewayToLambdaRole, Arn ]
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt [ TriggerListBooksBySearchStateMachineFunction, Arn ]
+      ResourceId: !Ref ListBooksBySearchResource
+      RestApiId: !Ref ApiGateway
+
+  IssueBooksMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref LambdaAuthorizer
+      HttpMethod: POST
+      Integration:
+        Credentials: !GetAtt [ APIGatewayToLambdaRole, Arn ]
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt [ TriggerIssueBooksStateMachineFunction, Arn ]
+      ResourceId: !Ref IssueBooksResource
+      RestApiId: !Ref ApiGateway
+
+  ReturnBooksMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref LambdaAuthorizer
+      HttpMethod: POST
+      Integration:
+        Credentials: !GetAtt [ APIGatewayToLambdaRole, Arn ]
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt [ TriggerReturnBooksStateMachineFunction, Arn ]
+      ResourceId: !Ref ReturnBooksResource
+      RestApiId: !Ref ApiGateway
+
+  DeactivateBooksMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref LambdaAuthorizer
+      HttpMethod: POST
+      Integration:
+        Credentials: !GetAtt [ APIGatewayToLambdaRole, Arn ]
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt [ TriggerDeactivateBooksStateMachineFunction, Arn ]
+      ResourceId: !Ref DeactivateBooksResource
+      RestApiId: !Ref ApiGateway
+
+  GetUserDetailsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref LambdaAuthorizer
+      HttpMethod: POST
+      Integration:
+        Credentials: !GetAtt [ APIGatewayToLambdaRole, Arn ]
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+          - lambdaArn: !GetAtt [ GetUserDetailsFunction, Arn ]
+      ResourceId: !Ref GetUserDetailsResource
+      RestApiId: !Ref ApiGateway
+
+  ApiGatewayModel:
+    Type: AWS::ApiGateway::Model
+    Properties:
+      ContentType: 'application/json'
+      RestApiId: !Ref ApiGateway
+      Schema: { }
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - CreateNewMemberMethod
+      - AddNewBookMethod
+      - UpdateBookQtyMethod
+      - ListBooksBySearchMethod
+      - IssueBooksMethod
+      - ReturnBooksMethod
+      - DeactivateBooksMethod
+      - GetUserDetailsMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: 'dev'
+
+  LambdaAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      IdentitySource: method.request.header.authorization
+      Name: LambdaAuthorizer
+      AuthorizerUri: !Sub
+        - arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/${lambdaArn}/invocations
+        - lambdaArn: !GetAtt [ LambdaAuthorizerFunction, Arn ]
+      RestApiId: !Ref ApiGateway
+      Type: TOKEN
+      AuthorizerResultTtlInSeconds: 0
+
+
+# For Lambda Dependency Layers Configuration, code is adapted from
+# AWS Documentation:
+# Title: AWS::Lambda::LayerVersion
+# Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-lambda-layerversion.html
+########################## Lambda Dependency Layers Configuration ##########################
+  Boto3Layer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: boto3
+      CompatibleRuntimes:
+        - python3.9
+      Content:
+        S3Bucket: cloudtermassignment
+        S3Key: layer/boto3layer.zip
+      Description: Boto3
+
+  PyMySqlLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: pyMysql
+      CompatibleRuntimes:
+        - python3.9
+      Content:
+        S3Bucket: cloudtermassignment
+        S3Key: layer/pyMysql.zip
+      Description: pyMysql
+
+  JoseLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: jose
+      CompatibleRuntimes:
+        - python3.9
+      Content:
+        S3Bucket: cloudtermassignment
+        S3Key: layer/jose.zip
+      Description: jose
+
+  MultiDependencyLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: MultiDependencyLayer
+      CompatibleRuntimes:
+        - python3.9
+      Content:
+        S3Bucket: cloudtermassignment
+        S3Key: layer/multiDependency.zip
+      Description: Multiple dependencies
+
+
+########################## SES Configuration ##########################
+  SesIdentityConfiguration:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref AdminEmailId
+
+
+# For IAM Roles Configuration, code is adapted from
+# AWS Documentation:
+# Title: AWS::IAM::Role
+# Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iam-role.html
+########################## Roles and Policies Configuration ##########################
+  StepFunctionExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: StepFunctionExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - states.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: '/'
+      Policies:
+        - PolicyName: StepFunctionEnableLogging
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'lambda:InvokeFunction'
+                Resource: '*'
+
+  APIGatewayToStepFunctions:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: APIGatewayToStepFunctions
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess  #For step function access
+
+  APIGatewayToLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: APIGatewayToLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - apigateway.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: APIGatewayToLambdaPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'lambda:*'
+                Resource: '*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  LambdaToStepFunctionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaToStepFunctionsRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole  #For cloudwatch logs
+
+  LambdaToSQSRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaToSQSRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LambdaSQSPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sqs:SendMessage'
+                  - 'sqs:ReceiveMessage'
+                Resource: !GetAtt [ EmailSQSQueue, Arn ]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  LambdaToSesSqsToLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaToSesSqsToLambdaRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LambdaSesAndSqsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'sqs:ReceiveMessage'
+                  - 'sqs:DeleteMessage'
+                  - 'sqs:GetQueueAttributes'
+                Resource: !GetAtt [ EmailSQSQueue, Arn ]
+              - Effect: Allow
+                Action:
+                  - 'ses:SendEmail'
+                  - 'ses:SendRawEmail'
+                Resource: '*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  LambdaToSQLInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaToSQLInstanceRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LambdaAccessRDSSecretKeyPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'secretsmanager:GetSecretValue'
+                  - 'kms:Decrypt'
+                Resource: '*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+  LambdaAllowUsersToAddInGroups:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: LambdaAllowUsersToAddInGroups
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: 'cognito-idp:AdminAddUserToGroup'
+            Resource: !GetAtt [ CognitoUserPool, Arn ]
+      Roles:
+        - !Ref LambdaExecutionRole
+
+  LambdaCognitoCreateUserRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaCognitoCreateUserRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LambdaCognitoCreateUserPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'cognito-idp:AdminCreateUser'
+                Resource: !GetAtt [ CognitoUserPool, Arn ]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  LambdaCognitoGetUserAndStepFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaCognitoGetUserAndStepFunctionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LambdaCognitoAdminGetUserPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'cognito-idp:AdminGetUser'
+                Resource: !GetAtt [ CognitoUserPool, Arn ]
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  LambdaCognitoGetUserAndSQLRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaCognitoGetUserAndSQLRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LambdaCognitoGetUserPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'cognito-idp:GetUser'
+                Resource: !GetAtt [ CognitoUserPool, Arn ]
+        - PolicyName: LambdaSecretManagerPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'secretsmanager:GetSecretValue'
+                  - 'kms:Decrypt'
+                Resource: '*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+  LambdaAllowAPIGateway:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt [ LambdaAuthorizerFunction, Arn ]
+      Action: lambda:invokeFunction
+      Principal: apigateway.amazonaws.com
+
+  LambdaSESVerifyEmailRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaSESVerifyEmailRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: LambdaSESVerifyEmailPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 'ses:VerifyEmailIdentity'
+                Resource: '*'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+
+# For Lambda Configuration, code is adapted from
+# AWS Documentation:
+# Title: AWS::Lambda::Function
+# Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-lambda-function.html
+########################## Lambda Functions Configuration ##########################
+  MysqlDBCreateFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: MysqlDBCreateFunction
+      Handler: mysql_db_create.handler
+      Role: !GetAtt [ LambdaCognitoGetUserAndSQLRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/mysqlDBCreate.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  TriggerRegisterNewMemberStateMachineFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: TriggerRegisterNewMemberStateMachineFunction
+      Handler: trigger_register_new_member_state_machine.handler
+      Role: !GetAtt [ LambdaToStepFunctionsRole, Arn ]
+      Runtime: python3.9
+      Timeout: 60
+      Layers:
+        - !Ref Boto3Layer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/triggerRegisterNewMemberStateMachine.zip
+      Environment:
+        Variables:
+          step_function_arn: !GetAtt [ RegisterNewMemberStateMachine, Arn ]
+
+  RegisterNewMemberFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: RegisterNewMemberFunction
+      Handler: register_new_member.handler
+      Role: !GetAtt [ LambdaCognitoCreateUserRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/registerNewMember.zip
+      Environment:
+        Variables:
+          user_pool_id: !Ref CognitoUserPool
+
+  AssociateGroupToNewMemberFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: AssociateGroupToNewMemberFunction
+      Handler: associate_group_to_members.handler
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/associateGroupToNewMember.zip
+      Environment:
+        Variables:
+          user_pool_id: !Ref CognitoUserPool
+
+  VerifyEmailFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: VerifyEmailFunction
+      Handler: verify_email.handler
+      Role: !GetAtt [ LambdaSESVerifyEmailRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/verifyEmail.zip
+
+  UnauthorizedRegisterAccessFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: UnauthorizedRegisterAccessFunction
+      Handler: unauthorized_register_access.handler
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/unauthorizedRegisterAccess.zip
+
+  UpdateBookQtyFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: UpdateBookQtyFunction
+      Handler: update_books_qty.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/updateBooksQty.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  TriggerListBooksBySearchStateMachineFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: TriggerListBooksBySearchStateMachineFunction
+      Handler: trigger_list_books_by_search_state_machine.handler
+      Role: !GetAtt [ LambdaToStepFunctionsRole, Arn ]
+      Runtime: python3.9
+      Timeout: 60
+      Layers:
+        - !Ref Boto3Layer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/triggerListBooksBySearchStateMachine.zip
+      Environment:
+        Variables:
+          step_function_arn: !GetAtt [ ListBooksBySearchStateMachine, Arn ]
+
+  ListAllBooksFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ListAllBooksFunction
+      Handler: list_all_books.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/listAllBooks.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  SearchBooksByAuthorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: SearchBooksByAuthorFunction
+      Handler: search_books_by_author.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/searchBooksByAuthor.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  SearchBooksByAvailableQtyFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: SearchBooksByAvailableQtyFunction
+      Handler: search_books_by_available_qty.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/searchBooksByAvailableQty.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  SearchBooksByGenreFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: SearchBooksByGenreFunction
+      Handler: search_books_by_genre.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/searchBooksByGenre.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  SearchBooksByTitleFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: SearchBooksByTitleFunction
+      Handler: search_books_by_title.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/searchBooksByTitle.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  TriggerIssueBooksStateMachineFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: TriggerIssueBooksStateMachineFunction
+      Handler: trigger_issue_books_state_machine.handler
+      Role: !GetAtt [ LambdaCognitoGetUserAndStepFunctionRole, Arn ]
+      Runtime: python3.9
+      Timeout: 60
+      Layers:
+        - !Ref Boto3Layer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/triggerIssueBooksStateMachine.zip
+      Environment:
+        Variables:
+          step_function_arn: !GetAtt [ IssueBooksStateMachine, Arn ]
+          user_pool_id: !Ref CognitoUserPool
+
+  CheckBorrowBookCapacityFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CheckBorrowBookCapacityFunction
+      Handler: check_borrow_book_capacity.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/checkBorrowBookCapacity.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  CheckAlreadyIssuedBooksFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CheckAlreadyIssuedBooksFunction
+      Handler: check_already_issued_books.handler
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+      Runtime: python3.9
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/checkAlreadyIssuedBooks.zip
+
+  NotEligibleToBorrowBooksFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: NotEligibleToBorrowBooksFunction
+      Handler: not_eligible_to_borrow.handler
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+      Runtime: python3.9
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/notEligibleToBorrowBooks.zip
+
+  IssueBooksFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: IssueBooksFunction
+      Handler: issue_books.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/issueBooks.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  TriggerIssueConfirmationEmailFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: TriggerIssueConfirmationEmailFunction
+      Handler: trigger_issue_confirmation_mail.handler
+      Role: !GetAtt [ LambdaToSQSRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/triggerIssueConfirmationEmail.zip
+      Environment:
+        Variables:
+          sqsUrl: https://sqs.us-east-1.amazonaws.com/652258292581/emailSqsQueue
+
+  TriggerReturnBooksStateMachineFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: TriggerReturnBooksStateMachineFunction
+      Handler: trigger_return_books_state_machine.handler
+      Role: !GetAtt [ LambdaCognitoGetUserAndStepFunctionRole, Arn ]
+      Runtime: python3.9
+      Timeout: 60
+      Layers:
+        - !Ref Boto3Layer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/triggerReturnBooksStateMachine.zip
+      Environment:
+        Variables:
+          step_function_arn: !GetAtt [ ReturnBooksStateMachine, Arn ]
+          user_pool_id: !Ref CognitoUserPool
+
+  CalculateFineAtReturnFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CalculateFineAtReturnFunction
+      Handler: calculate_fine_at_return.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/calculateFineAtReturn.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  ReturnBooksFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ReturnBooksFunction
+      Handler: return_book.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/returnBooks.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  TriggerReturnConfirmationEmailFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: TriggerReturnConfirmationEmailFunction
+      Handler: trigger_return_confirmation_mail.handler
+      Role: !GetAtt [ LambdaToSQSRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/triggerReturnConfirmationEmail.zip
+      Environment:
+        Variables:
+          sqsUrl: https://sqs.us-east-1.amazonaws.com/652258292581/emailSqsQueue
+
+  TriggerDeactivateBooksStateMachineFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: TriggerDeactivateBooksStateMachineFunction
+      Handler: trigger_deactivate_books_state_machine.handler
+      Role: !GetAtt [ LambdaCognitoGetUserAndStepFunctionRole, Arn ]
+      Runtime: python3.9
+      Timeout: 60
+      Layers:
+        - !Ref Boto3Layer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/triggerDeactivateBooksStateMachine.zip
+      Environment:
+        Variables:
+          step_function_arn: !GetAtt [ DeactivateBooksStateMachine, Arn ]
+          user_pool_id: !Ref CognitoUserPool
+
+  VerifyBookStatusFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: VerifyBookStatusFunction
+      Handler: verify_book_status.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/verifyBookStatus.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  DeactivateBookFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: DeactivateBookFunction
+      Handler: deactivate_book.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/deactivateBook.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  GetUserDetailsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: GetUserDetailsFunction
+      Handler: get_user_details.handler
+      Role: !GetAtt [ LambdaCognitoGetUserAndSQLRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/getUserDetails.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  TriggerAddBookStateMachineFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: TriggerAddBookStateMachineFunction
+      Handler: trigger_add_book_state_machine.handler
+      Role: !GetAtt [ LambdaCognitoGetUserAndStepFunctionRole, Arn ]
+      Runtime: python3.9
+      Timeout: 60
+      Layers:
+        - !Ref Boto3Layer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/triggerAddBookStateMachine.zip
+      Environment:
+        Variables:
+          step_function_arn: !GetAtt [ AddBookStateMachine, Arn ]
+          user_pool_id: !Ref CognitoUserPool
+
+  CheckIfBookAlreadyPresentFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CheckIfBookAlreadyPresentFunction
+      Handler: check_if_book_already_present.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/checkIfBookAlreadyPresent.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  AddNewBookFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: AddNewBookFunction
+      Handler: add_book.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/addNewBook.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  BookAlreadyPresentIssueFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: BookAlreadyPresentIssueFunction
+      Handler: book_already_present_issue.handler
+      Role: !GetAtt [ LambdaToSQLInstanceRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+        - !Ref PyMySqlLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/bookAlreadyPresentIssue.zip
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+      Environment:
+        Variables:
+          mysql_secret: !Ref ELibraryMySQLInstanceCredential
+
+  TriggerEmailFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: TriggerEmailFunction
+      Handler: trigger_email.handler
+      Role: !GetAtt [ LambdaToSesSqsToLambdaRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref Boto3Layer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/triggerEmail.zip
+      Environment:
+        Variables:
+          from_email: !Ref AdminEmailId
+
+  LambdaFunctionEventSourceMapping:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      BatchSize: 10
+      Enabled: true
+      EventSourceArn: !GetAtt EmailSQSQueue.Arn
+      FunctionName: !GetAtt TriggerEmailFunction.Arn
+
+  LambdaAuthorizerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: LambdaAuthorizerFunction
+      Handler: lambda_authorizer.handler
+      Role: !GetAtt [ LambdaExecutionRole, Arn ]
+      Runtime: python3.9
+      Layers:
+        - !Ref JoseLayer
+        - !Ref MultiDependencyLayer
+      Code:
+        S3Bucket: cloudtermassignment
+        S3Key: lambda/lambdaAuthorizer.zip
+      Environment:
+        Variables:
+          user_pool_id: !Ref CognitoUserPool
+          client_id: !Ref CognitoUserPoolClient
+
+
+# For State machine Configuration, code is adapted from
+# AWS Documentation:
+# Title: AWS::StepFunctions::StateMachine
+# Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-stepfunctions-statemachine.html
+
+# For Log Groups Configuration, code is adapted from
+# AWS Documentation:
+# Title: AWS::Logs::LogGroup
+# Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-logs-loggroup.html
+########################## State Machine and their respective Log Groups Configuration ##########################
+  LibraryHomeStateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/stepfunction/libraryHomeStateMachine
+
+  RegisterNewMemberStateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/stepfunction/registerNewMemberStateMachineLogGroup
+
+  ListBooksBySearchStateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/stepfunction/listBooksBySearchStateMachineLogGroup
+
+  IssueBooksStateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/stepfunction/IssueBooksStateMachineLogGroup
+
+  ReturnBooksStateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/stepfunction/ReturnBooksStateMachineLogGroup
+
+  DeactivateBooksStateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/stepfunction/DeactivateBooksStateMachineLogGroup
+
+  AddBookStateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/stepfunction/AddBookStateMachineLogGroup
+
+  RegisterNewMemberStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: RegisterNewMemberStateMachine
+      StateMachineType: STANDARD
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt RegisterNewMemberStateMachineLogGroup.Arn
+        Level: ALL
+        IncludeExecutionData: True
+      DefinitionS3Location:
+        Bucket: cloudtermassignment
+        Key: step-function/register_new_member.json
+      RoleArn: !GetAtt [ StepFunctionExecutionRole, Arn ]
+
+  ListBooksBySearchStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: ListBooksBySearchStateMachine
+      StateMachineType: STANDARD
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt ListBooksBySearchStateMachineLogGroup.Arn
+        Level: ALL
+        IncludeExecutionData: True
+      DefinitionS3Location:
+        Bucket: cloudtermassignment
+        Key: step-function/display_books.json
+      RoleArn: !GetAtt [ StepFunctionExecutionRole, Arn ]
+
+  IssueBooksStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: IssueBooksStateMachine
+      StateMachineType: STANDARD
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt IssueBooksStateMachineLogGroup.Arn
+        Level: ALL
+        IncludeExecutionData: True
+      DefinitionS3Location:
+        Bucket: cloudtermassignment
+        Key: step-function/issue_books.json
+      RoleArn: !GetAtt [ StepFunctionExecutionRole, Arn ]
+
+  ReturnBooksStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: ReturnBooksStateMachine
+      StateMachineType: STANDARD
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt ReturnBooksStateMachineLogGroup.Arn
+        Level: ALL
+        IncludeExecutionData: True
+      DefinitionS3Location:
+        Bucket: cloudtermassignment
+        Key: step-function/return_books.json
+      RoleArn: !GetAtt [ StepFunctionExecutionRole, Arn ]
+
+  DeactivateBooksStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: DeactivateBooksStateMachine
+      StateMachineType: STANDARD
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt DeactivateBooksStateMachineLogGroup.Arn
+        Level: ALL
+        IncludeExecutionData: True
+      DefinitionS3Location:
+        Bucket: cloudtermassignment
+        Key: step-function/deactivate_books.json
+      RoleArn: !GetAtt [ StepFunctionExecutionRole, Arn ]
+
+  AddBookStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: AddBookStateMachine
+      StateMachineType: STANDARD
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt AddBookStateMachineLogGroup.Arn
+        Level: ALL
+        IncludeExecutionData: True
+      DefinitionS3Location:
+        Bucket: cloudtermassignment
+        Key: step-function/add_books.json
+      RoleArn: !GetAtt [ StepFunctionExecutionRole, Arn ]
+
+
+########################## SQS Configuration ##########################
+  EmailSQSQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: 'emailSqsQueue'
+
+
+# For RDS Instance Configuration, code is adapted from
+# AWS Documentation:
+# Title: AWS::RDS::DBInstance
+# Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-dbinstance.html
+
+# For Secret Manager Configuration, code is adapted from
+# AWS Documentation:
+# Title: AWS Secrets Manager resource type reference
+# Availability: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/AWS_SecretsManager.html
+########################## RDS and SecretManager Configuration ##########################
+  ELibraryMySQLInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: e_Library
+      MasterUsername:
+        Fn::Sub: '{{resolve:secretsmanager:${ELibraryMySQLInstanceCredential}::username}}'
+      MasterUserPassword:
+        Fn::Sub: '{{resolve:secretsmanager:${ELibraryMySQLInstanceCredential}::password}}'
+      Engine: MySQL
+      DBInstanceClass: db.t2.micro
+      StorageType: gp2
+      PubliclyAccessible: False
+      AllocatedStorage: 5
+      VPCSecurityGroups:
+        - !Ref RdsSecurityGroup
+      DBSubnetGroupName: !Ref RdsSubnetGroup
+
+  RdsSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for RDS
+      DBSubnetGroupName: RdsSubnetGroup
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+
+  ELibraryMySQLInstanceCredential:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: ELibraryMySQLInstanceCredential
+      GenerateSecretString:
+        RequireEachIncludedType: True
+        SecretStringTemplate: '{"username": "root_user"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\'
+
+  ELibraryMySQLCredentialAttachment:
+    Type: AWS::SecretsManager::SecretTargetAttachment
+    Properties:
+      SecretId: !Ref ELibraryMySQLInstanceCredential
+      TargetId: !Ref ELibraryMySQLInstance
+      TargetType: AWS::RDS::DBInstance

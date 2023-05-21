@@ -1,0 +1,61 @@
+{
+  "Comment": "Displays books as per user preference!",
+  "StartAt": "Choice?",
+  "States": {
+    "Choice?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.choice",
+          "StringEquals": "all",
+          "Next": "List All Books"
+        },
+        {
+          "Variable": "$.choice",
+          "StringEquals": "author",
+          "Next": "List books by Author"
+        },
+        {
+          "Variable": "$.choice",
+          "StringEquals": "genre",
+          "Next": "List books by Genre"
+        },
+        {
+          "Variable": "$.choice",
+          "StringEquals": "qty",
+          "Next": "List books by Availability"
+        },
+        {
+          "Variable": "$.choice",
+          "StringEquals": "title",
+          "Next": "List books by Title"
+        }
+      ]
+    },
+    "List All Books": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:652258292581:function:ListAllBooksFunction",
+      "End": true
+    },
+    "List books by Author": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:652258292581:function:SearchBooksByAuthorFunction",
+      "End": true
+    },
+    "List books by Genre": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:652258292581:function:SearchBooksByGenreFunction",
+      "End": true
+    },
+    "List books by Title": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:652258292581:function:SearchBooksByTitleFunction",
+      "End": true
+    },
+    "List books by Availability": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:652258292581:function:SearchBooksByAvailableQtyFunction",
+      "End": true
+    }
+  }
+}

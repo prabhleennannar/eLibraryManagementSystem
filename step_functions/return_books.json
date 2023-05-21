@@ -1,0 +1,33 @@
+{
+  "Comment": "To Return books to Library!",
+  "StartAt": "Process Return",
+  "States": {
+    "Process Return": {
+      "Type": "Map",
+      "InputPath": "$",
+      "ItemsPath": "$.return_request",
+      "ResultPath": "$.result",
+      "ItemProcessor": {
+        "StartAt": "Calculate Fine",
+        "States": {
+          "Calculate Fine": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:us-east-1:652258292581:function:CalculateFineAtReturnFunction",
+            "Next": "Return Books"
+          },
+          "Return Books": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:us-east-1:652258292581:function:ReturnBooksFunction",
+            "End": true
+          }
+        }
+      },
+      "Next": "Trigger Return Confirmation Email"
+    },
+    "Trigger Return Confirmation Email": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:652258292581:function:TriggerReturnConfirmationEmailFunction",
+      "End": true
+    }
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "Comment": "To issue books to Users!",
+  "StartAt": "Check Book Borrow Capacity",
+  "States": {
+    "Check Book Borrow Capacity": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:652258292581:function:CheckBorrowBookCapacityFunction",
+      "Next": "Borrow Capacity?"
+    },
+    "Borrow Capacity?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.is_eligible",
+          "BooleanEquals": true,
+          "Next": "Check Already Issued Books"
+        },
+        {
+          "Variable": "$.is_eligible",
+          "BooleanEquals": false,
+          "Next": "Not Eligible To Borrow"
+        }
+      ]
+    },
+    "Not Eligible To Borrow": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:652258292581:function:NotEligibleToBorrowBooksFunction",
+      "End": true
+    },
+    "Check Already Issued Books": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:652258292581:function:CheckAlreadyIssuedBooksFunction",
+      "Next": "Can Borrow Books?"
+    },
+    "Can Borrow Books?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.is_eligible",
+          "BooleanEquals": true,
+          "Next": "Issue Books"
+        },
+        {
+          "Variable": "$.is_eligible",
+          "BooleanEquals": false,
+          "Next": "Not Eligible To Borrow"
+        }
+      ]
+    },
+    "Issue Books": {
+      "Type": "Map",
+      "InputPath": "$",
+      "ItemsPath": "$.books_to_issue",
+      "ResultPath": "$.result",
+      "ItemProcessor": {
+        "StartAt": "Issue Book",
+        "States": {
+          "Issue Book": {
+            "Type": "Task",
+            "Resource": "arn:aws:lambda:us-east-1:652258292581:function:IssueBooksFunction",
+            "End": true
+          }
+        }
+      },
+      "Next": "Trigger Issue Confirmation Email"
+    },
+    "Trigger Issue Confirmation Email": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:us-east-1:652258292581:function:TriggerIssueConfirmationEmailFunction",
+      "End": true
+    }
+  }
+}
